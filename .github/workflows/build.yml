@@ -1,0 +1,214 @@
+name: Build Chinese package
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: '上游版本号，例如 2.4.0（留空则用最新）'
+        required: false
+        default: ''
+      dry_run:
+        description: '只构建、不发布 Release（用于测试）'
+        type: boolean
+        required: false
+        default: false
+  schedule:
+    - cron: '0 3 * * *'
+  repository_dispatch:
+    types: [upstream-release]
+
+permissions:
+  contents: write
+
+concurrency:
+  group: build-cn
+  cancel-in-progress: false
+
+jobs:
+  resolve:
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.v.outputs.version }}
+      tag: ${{ steps.v.outputs.tag }}
+      skip: ${{ steps.v.outputs.skip }}
+      win_url: ${{ steps.v.outputs.win_url }}
+      apk_url: ${{ steps.v.outputs.apk_url }}
+    steps:
+      - name: Resolve upstream release
+        id: v
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          INPUT_VERSION: ${{ inputs.version }}
+          DRY: ${{ inputs.dry_run }}
+        run: |
+          set -euo pipefail
+          if [ -n "${INPUT_VERSION}" ]; then
+            VER="${INPUT_VERSION}"
+            REL=$(curl -fsSL "https://api.github.com/repos/InukaAsith/TwinDesk/releases/tags/v${VER}")
+          else
+            REL=$(curl -fsSL "https://api.github.com/repos/InukaAsith/TwinDesk/releases/latest")
+            VER=$(echo "$REL" | jq -r '.tag_name' | sed 's/^v//')
+          fi
+          WIN=$(echo "$REL" | jq -r '[.assets[] | select(.name | test("^TwinDesk-Setup-.*[^-]arm64[^/]*\\.exe$"))][0].browser_download_url // empty')
+          APK=$(echo "$REL" | jq -r '[.assets[] | select(.name | test("-full\\.apk$"))][0].browser_download_url // empty')
+          echo "version=$VER" >> "$GITHUB_OUTPUT"
+          echo "win_url=$WIN" >> "$GITHUB_OUTPUT"
+          echo "apk_url=$APK" >> "$GITHUB_OUTPUT"
+          echo "tag=v${VER}-cn.1" >> "$GITHUB_OUTPUT"
+          if [ "${DRY}" != "true" ] && gh release view "v${VER}-cn.1" --repo "${GITHUB_REPOSITORY}" >/dev/null 2>&1; then
+            echo "v${VER}-cn.1 已存在，跳过"
+            echo "skip=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "skip=false" >> "$GITHUB_OUTPUT"
+          fi
+          echo "upstream ${VER}"; echo "win: $WIN"; echo "apk: $APK"
+
+  windows:
+    needs: resolve
+    if: needs.resolve.outputs.skip != 'true' && needs.resolve.outputs.win_url != ''
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+      - name: Download and unpack
+        shell: bash
+        env:
+          URL: ${{ needs.resolve.outputs.win_url }}
+        run: |
+          set -euo pipefail
+          curl -fL --retry 3 -o setup.exe "$URL"
+          mkdir -p inst app
+          7z x setup.exe -oinst -y >/dev/null
+          7z x 'inst/$PLUGINSDIR/app-64.7z' -oapp -y >/dev/null
+          ls app | head
+      - name: Apply localization and build packages
+        shell: bash
+        env:
+          VER: ${{ needs.resolve.outputs.version }}
+        run: |
+          set -euo pipefail
+          node scripts/windows/apply.js app/resources/app
+          mkdir -p out patch/app/shared patch/app/windows
+          mv app "out/TwinDesk-CN-${VER}"
+          APP="out/TwinDesk-CN-${VER}/resources/app"
+          # 免安装 zip
+          7z a -tzip -mx=5 "out/TwinDesk-CN-Windows-${VER}.zip" "out/TwinDesk-CN-${VER}" >/dev/null
+          # 汉化补丁：中文文件 + 原版备份 + 脚本
+          cp "$APP/shared/i18n-zh.js" patch/app/shared/
+          cp "$APP/shared/traymenu.js" patch/app/shared/
+          cp "$APP"/shared/*.html patch/app/shared/ 2>/dev/null || true
+          cp "$APP"/windows/*.html patch/app/windows/ 2>/dev/null || true
+          mkdir -p patch/app/windows/mesh
+          cp "$APP/windows/mesh/app.html" patch/app/windows/mesh/ 2>/dev/null || true
+          cp "$APP/windows/ipc.js" patch/app/windows/
+          cp -r "$APP/_zh_backup" patch/backup
+          cp windows/install.cmd "patch/安装汉化.cmd"
+          cp windows/restore.cmd "patch/还原英文界面.cmd"
+          (cd patch && 7z a -tzip -mx=5 "../out/TwinDesk-CN-Windows-Patch-${VER}.zip" . >/dev/null)
+          ls -lh out
+      - uses: actions/upload-artifact@v4
+        with:
+          name: windows-package
+          path: out/TwinDesk-CN-Windows-*.zip
+          retention-days: 7
+
+  android:
+    needs: resolve
+    if: needs.resolve.outputs.skip != 'true' && needs.resolve.outputs.apk_url != ''
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '21'
+      - name: Check signing secret
+        id: key
+        env:
+          KS: ${{ secrets.ANDROID_KEYSTORE_BASE64 }}
+        run: |
+          if [ -n "${KS}" ]; then echo "ok=true" >> "$GITHUB_OUTPUT"; else echo "ok=false" >> "$GITHUB_OUTPUT"; echo "ANDROID_KEYSTORE_BASE64 未配置，跳过安卓构建"; fi
+      - name: Install build-tools
+        if: steps.key.outputs.ok == 'true'
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq unzip >/dev/null
+          echo "y" | sudo ${ANDROID_HOME}/cmdline-tools/latest/bin/sdkmanager "build-tools;35.0.0" >/dev/null || true
+          echo "${ANDROID_HOME}/build-tools/35.0.0" >> "$GITHUB_PATH"
+      - name: Download APK and apktool
+        if: steps.key.outputs.ok == 'true'
+        env:
+          URL: ${{ needs.resolve.outputs.apk_url }}
+        run: |
+          set -euo pipefail
+          curl -fL --retry 3 -o TwinDesk.apk "$URL"
+          curl -fL --retry 3 -o apktool.jar https://github.com/iBotPeaches/Apktool/releases/download/v2.11.1/apktool_2.11.1.jar
+      - name: Decode and translate
+        if: steps.key.outputs.ok == 'true'
+        run: |
+          set -euo pipefail
+          java -jar apktool.jar d TwinDesk.apk -o decoded -f
+          node scripts/android/apply.js decoded
+      - name: Rebuild, align, sign
+        if: steps.key.outputs.ok == 'true'
+        env:
+          KS: ${{ secrets.ANDROID_KEYSTORE_BASE64 }}
+          KS_PASS: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
+          KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
+          KEY_PASS: ${{ secrets.ANDROID_KEY_PASSWORD }}
+          VER: ${{ needs.resolve.outputs.version }}
+        run: |
+          set -euo pipefail
+          java -jar apktool.jar b decoded -o out-unsigned.apk
+          zipalign -f -p 4 out-unsigned.apk out-aligned.apk
+          echo "$KS" | base64 -d > release.keystore
+          apksigner sign --ks release.keystore --ks-key-alias "$KEY_ALIAS" \
+            --ks-pass "pass:${KS_PASS}" --key-pass "pass:${KEY_PASS}" \
+            --out "TwinDesk-CN-Android-${VER}.apk" out-aligned.apk
+          apksigner verify --print-certs "TwinDesk-CN-Android-${VER}.apk" | head -3
+      - uses: actions/upload-artifact@v4
+        if: steps.key.outputs.ok == 'true'
+        with:
+          name: android-package
+          path: TwinDesk-CN-Android-*.apk
+          retention-days: 7
+
+  release:
+    needs: [resolve, windows, android]
+    if: always() && needs.windows.result == 'success' && needs.resolve.outputs.skip != 'true' && inputs.dry_run != true
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: windows-package
+          path: dist
+      - uses: actions/download-artifact@v4
+        continue-on-error: true
+        with:
+          name: android-package
+          path: dist
+      - name: Create release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          VER: ${{ needs.resolve.outputs.version }}
+          TAG: ${{ needs.resolve.outputs.tag }}
+        run: |
+          set -euo pipefail
+          ls -lh dist
+          {
+            echo "TwinDesk ${VER} 简体中文版（非官方汉化）"
+            echo
+            echo "自动构建：基于上游 v${VER} 的官方安装包与 APK，套用本仓库汉化后重新打包。"
+            echo
+            echo "- TwinDesk-CN-Windows-${VER}.zip — Windows 免安装版"
+            echo "- TwinDesk-CN-Windows-Patch-${VER}.zip — 已安装官方版时使用的补丁"
+            echo "- TwinDesk-CN-Android-${VER}.apk — Android 版（若构建成功）"
+          } > notes.md
+          gh release create "$TAG" --title "TwinDesk 中文版 ${VER}" --notes-file notes.md dist/* || \
+          gh release upload "$TAG" dist/* --clobber
+          gh release view "$TAG"
