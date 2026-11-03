@@ -18,9 +18,9 @@
 
 | 文件 | 说明 |
 |---|---|
-| `TwinDesk-中文版-Windows-2.4.0.zip` | Windows 免安装版，解压后双击 `TwinDesk.exe` |
-| `TwinDesk-中文版-Android-2.4.0.apk` | Android 版（Android 10+） |
-| `汉化补丁-Windows.zip` | 已安装官方版时使用，覆盖界面文件 |
+| `TwinDesk-CN-Windows-2.4.0.zip` | Windows 免安装版，解压后双击 `TwinDesk.exe` |
+| `TwinDesk-CN-Android-2.4.0.apk` | Android 版（Android 10+） |
+| `TwinDesk-CN-Windows-Patch.zip` | 已安装官方版时使用，覆盖界面文件 |
 
 ## 使用
 
@@ -35,7 +35,7 @@
 ### Windows（已装官方版，只打汉化补丁）
 
 1. 先安装官方 TwinDesk 2.4.0
-2. 解压 `汉化补丁-Windows.zip`
+2. 解压 `TwinDesk-CN-Windows-Patch.zip`
 3. 右键 `安装汉化.cmd` → 以管理员身份运行
 4. 重新打开 TwinDesk
 
