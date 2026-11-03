@@ -79,6 +79,31 @@
 
 Android 版界面文字硬编码在 Kotlin 代码里，因此采用：反编译 APK → 替换 smali 中的 `const-string` 字面量 → 用 apktool 回编译 → zipalign → 自签名。详见 [android/README.md](android/README.md)。
 
+
+## 自动构建（GitHub Actions）
+
+工作流 [`.github/workflows/build.yml`](.github/workflows/build.yml) 会在上游发布新版本后自动产出中文包：
+
+- **触发**：每天 03:00 UTC 定时检查上游最新 Release；也可在 Actions 页面手动运行
+- **手动指定版本**：`gh workflow run build.yml -f version=2.5.0`
+- **只构建不发布**：`gh workflow run build.yml -f version=2.4.0 -f dry_run=true`
+- **跳过条件**：仓库里已存在 `v<版本>-cn.1` 的 Release 时自动跳过
+
+产物：
+
+| 文件 | 来源 |
+|---|---|
+| `TwinDesk-CN-Windows-<版本>.zip` | 下载官方安装包 → 解包 → 注入汉化层 → 重新压缩 |
+| `TwinDesk-CN-Windows-Patch-<版本>.zip` | 中文文件 + 原版备份 + 安装/还原脚本 |
+| `TwinDesk-CN-Android-<版本>.apk` | 下载官方 APK → apktool 反编译 → 替换字符串 → 回编译 → 签名 |
+
+安卓构建需要以下仓库 Secrets（本仓库已配置）：
+
+- `ANDROID_KEYSTORE_BASE64`：签名 keystore 的 Base64
+- `ANDROID_KEYSTORE_PASSWORD` / `ANDROID_KEY_PASSWORD` / `ANDROID_KEY_ALIAS`
+
+没有配置 keystore 时，工作流会跳过安卓部分，只产出 Windows 包。
+
 ## 许可与署名
 
 - 原项目：TwinDesk，Copyright (C) 2026 inukaasith，GPL-3.0
