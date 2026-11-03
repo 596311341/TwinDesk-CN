@@ -49,7 +49,7 @@ jobs:
             REL=$(curl -fsSL "https://api.github.com/repos/InukaAsith/TwinDesk/releases/latest")
             VER=$(echo "$REL" | jq -r '.tag_name' | sed 's/^v//')
           fi
-          WIN=$(echo "$REL" | jq -r '[.assets[] | select(.name | test("^TwinDesk-Setup-.*[^-]arm64[^/]*\\.exe$"))][0].browser_download_url // empty')
+          WIN=$(echo "$REL" | jq -r '[.assets[] | select(.name | test("^TwinDesk-Setup-.*\\.exe$")) | select(.name | test("arm64") | not)][0].browser_download_url // empty')
           APK=$(echo "$REL" | jq -r '[.assets[] | select(.name | test("-full\\.apk$"))][0].browser_download_url // empty')
           echo "version=$VER" >> "$GITHUB_OUTPUT"
           echo "win_url=$WIN" >> "$GITHUB_OUTPUT"
